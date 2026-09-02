@@ -1,0 +1,122 @@
+x-airflow-common:
+  &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/${POSTGRES_DB:-airflow}
+    AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW_FERNET_KEY:-46BK3pT0T_4B3J_8p2R2N_8x1pY8pZ_8p2R2N_8x1pY=}'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__LOGGING_LEVEL: INFO
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 10
+    # Credentials & Database Configuration for Pipeline
+    NEWSAPI_KEY: '${NEWSAPI_KEY:-your_newsapi_key_here}'
+    WAREHOUSE_DB_HOST: postgres
+    WAREHOUSE_DB_PORT: 5432
+    WAREHOUSE_DB_NAME: news_warehouse
+    WAREHOUSE_DB_USER: ${POSTGRES_USER:-airflow}
+    WAREHOUSE_DB_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./dbt_stem:/opt/airflow/dbt_stem
+    - ./scripts:/opt/airflow/scripts
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # ============================================================================
+  # Shared PostgreSQL Container (Airflow Metadata + STEM Data Warehouse)
+  # ============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: news_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+      POSTGRES_MULTIPLE_DATABASES: news_warehouse
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+      - ./init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airflow} -d ${POSTGRES_DB:-airflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  # ============================================================================
+  # Airflow Database Initialization Service (One-Time Execution)
+  # ============================================================================
+  airflow-init:
+    <<: *airflow-common
+    container_name: stem_airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "Initializing Airflow database..."
+        airflow db init
+        echo "Creating admin user..."
+        airflow users create \
+          --username ${AIRFLOW_ADMIN_USER:-admin} \
+          --password ${AIRFLOW_ADMIN_PASSWORD:-admin} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+        echo "Initialization complete."
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+
+  # ============================================================================
+  # Airflow Webserver (UI at http://localhost:8080)
+  # ============================================================================
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: news_airflow_webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ============================================================================
+  # Airflow Scheduler (Runs Ingestion DAGs and dbt Transformations)
+  # ============================================================================
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: stem_airflow_scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db-volume:
