@@ -41,7 +41,7 @@ The entire stack—including the database and Airflow scheduler—is managed via
 
 ### Step 5:
 - Stop the container with:
-  - **docker compose down ** or **docker-compose down**
+  - **docker compose down** or **docker-compose down**
 
 ## Deep Dive (If you are gluttonous):
 - Orchestration: Apache Airflow manages the workflow, ensuring that news fetching and sentiment analysis run reliably on a schedule.
