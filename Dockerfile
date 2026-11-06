@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 USER airflow
 
 # Install ingestion, schema validation, sentiment analysis, and dbt dependencies
+# The sqalchemy is and older version the <> are a range. 
 RUN pip install --no-cache-dir \
     requests==2.31.0 \
     pydantic==2.6.1 \
